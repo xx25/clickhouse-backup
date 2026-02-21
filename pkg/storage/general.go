@@ -112,6 +112,8 @@ func (bd *BackupDestination) RemoveBackupRemote(ctx context.Context, backup Back
 		}
 
 		log.Info().Msgf("RemoveBackupRemote: batch deleted %d files from backup %s", totalDeleted, backup.BackupName)
+		// Clean up the backup directory itself (relevant for filesystem-based backends like LOCAL)
+		_ = bd.DeleteFile(ctx, backup.BackupName)
 		return nil
 	}
 
@@ -709,6 +711,21 @@ func NewBackupDestination(ctx context.Context, cfg *config.Config, ch *clickhous
 			sftpStorage,
 			cfg.SFTP.CompressionFormat,
 			cfg.SFTP.CompressionLevel,
+		}, nil
+	case "local":
+		if cfg.Local.Path, err = ch.ApplyMacros(ctx, cfg.Local.Path); err != nil {
+			return nil, err
+		}
+		if cfg.Local.ObjectDiskPath, err = ch.ApplyMacros(ctx, cfg.Local.ObjectDiskPath); err != nil {
+			return nil, err
+		}
+		localStorage := &Local{
+			Config: &cfg.Local,
+		}
+		return &BackupDestination{
+			localStorage,
+			cfg.Local.CompressionFormat,
+			cfg.Local.CompressionLevel,
 		}, nil
 	default:
 		return nil, fmt.Errorf("NewBackupDestination error: storage type '%s' is not supported", cfg.General.RemoteStorage)

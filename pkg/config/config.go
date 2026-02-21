@@ -36,6 +36,7 @@ type Config struct {
 	FTP        FTPConfig        `yaml:"ftp" envconfig:"_"`
 	SFTP       SFTPConfig       `yaml:"sftp" envconfig:"_"`
 	AzureBlob  AzureBlobConfig  `yaml:"azblob" envconfig:"_"`
+	Local      LocalConfig      `yaml:"local" envconfig:"_"`
 	Custom     CustomConfig     `yaml:"custom" envconfig:"_"`
 	// Mutex to protect concurrent access when applying macros
 	mu sync.Mutex `yaml:"-"`
@@ -227,6 +228,15 @@ type SFTPConfig struct {
 	Debug             bool   `yaml:"debug" envconfig:"SFTP_DEBUG"`
 }
 
+// LocalConfig - local filesystem storage settings section
+type LocalConfig struct {
+	Path              string `yaml:"path" envconfig:"LOCAL_PATH"`
+	ObjectDiskPath    string `yaml:"object_disk_path" envconfig:"LOCAL_OBJECT_DISK_PATH"`
+	CompressionFormat string `yaml:"compression_format" envconfig:"LOCAL_COMPRESSION_FORMAT"`
+	CompressionLevel  int    `yaml:"compression_level" envconfig:"LOCAL_COMPRESSION_LEVEL"`
+	Debug             bool   `yaml:"debug" envconfig:"LOCAL_DEBUG"`
+}
+
 // CustomConfig - custom CLI storage settings section
 type CustomConfig struct {
 	UploadCommand          string `yaml:"upload_command" envconfig:"CUSTOM_UPLOAD_COMMAND"`
@@ -319,6 +329,8 @@ func (cfg *Config) GetArchiveExtension() string {
 		return ArchiveExtensions[cfg.SFTP.CompressionFormat]
 	case "azblob":
 		return ArchiveExtensions[cfg.AzureBlob.CompressionFormat]
+	case "local":
+		return ArchiveExtensions[cfg.Local.CompressionFormat]
 	default:
 		return ""
 	}
@@ -338,6 +350,8 @@ func (cfg *Config) GetCompressionFormat() string {
 		return cfg.SFTP.CompressionFormat
 	case "azblob":
 		return cfg.AzureBlob.CompressionFormat
+	case "local":
+		return cfg.Local.CompressionFormat
 	case "none", "custom":
 		return "tar"
 	default:
@@ -378,6 +392,7 @@ func LoadConfig(configLocation string) (*Config, error) {
 	cfg.COS.Path = strings.Trim(cfg.COS.Path, "/ \t\r\n")
 	cfg.FTP.Path = strings.TrimRight(strings.Trim(cfg.FTP.Path, " \t\r\n"), "/")
 	cfg.SFTP.Path = strings.TrimRight(strings.Trim(cfg.SFTP.Path, " \t\r\n"), "/")
+	cfg.Local.Path = strings.TrimRight(strings.Trim(cfg.Local.Path, " \t\r\n"), "/")
 
 	cfg.AzureBlob.ObjectDiskPath = strings.Trim(cfg.AzureBlob.ObjectDiskPath, "/ \t\n")
 	cfg.S3.ObjectDiskPath = strings.Trim(cfg.S3.ObjectDiskPath, "/ \t\r\n")
@@ -385,6 +400,7 @@ func LoadConfig(configLocation string) (*Config, error) {
 	cfg.COS.ObjectDiskPath = strings.Trim(cfg.COS.ObjectDiskPath, "/ \t\r\n")
 	cfg.FTP.ObjectDiskPath = strings.TrimRight(strings.Trim(cfg.FTP.ObjectDiskPath, " \t\r\n"), "/")
 	cfg.SFTP.ObjectDiskPath = strings.TrimRight(strings.Trim(cfg.SFTP.ObjectDiskPath, " \t\r\n"), "/")
+	cfg.Local.ObjectDiskPath = strings.TrimRight(strings.Trim(cfg.Local.ObjectDiskPath, " \t\r\n"), "/")
 
 	// https://github.com/Altinity/clickhouse-backup/issues/855
 	if cfg.ClickHouse.FreezeByPart && cfg.ClickHouse.FreezeByPartWhere != "" && !freezeByPartBeginAndRE.MatchString(cfg.ClickHouse.FreezeByPartWhere) {
@@ -539,6 +555,9 @@ func ValidateObjectDiskConfig(cfg *Config) error {
 		if cfg.General.RemoteStorage == "sftp" && ((cfg.SFTP.ObjectDiskPath == "" && cfg.SFTP.Path == "") || (cfg.SFTP.ObjectDiskPath != "" && cfg.SFTP.Path == "") || (cfg.SFTP.Path != "" && strings.HasPrefix(cfg.SFTP.Path, cfg.SFTP.ObjectDiskPath))) {
 			return fmt.Errorf("data in objects disks, invalid sftp->object_disk_path config section, shall be not empty and shall not be prefix for sftp->path, shall not inside sftp->path if sftp->path empty")
 		}
+		if cfg.General.RemoteStorage == "local" && ((cfg.Local.ObjectDiskPath == "" && cfg.Local.Path == "") || (cfg.Local.ObjectDiskPath != "" && cfg.Local.Path == "") || (cfg.Local.Path != "" && strings.HasPrefix(cfg.Local.Path, cfg.Local.ObjectDiskPath))) {
+			return fmt.Errorf("data in objects disks, invalid local->object_disk_path config section, shall be not empty and shall not be prefix for local->path, shall not inside local->path if local->path empty")
+		}
 	}
 	return nil
 }
@@ -691,6 +710,10 @@ func DefaultConfig() *Config {
 			CompressionFormat: "tar",
 			CompressionLevel:  1,
 			Concurrency:       int(downloadConcurrency * 3),
+		},
+		Local: LocalConfig{
+			CompressionFormat: "tar",
+			CompressionLevel:  1,
 		},
 		Custom: CustomConfig{
 			CommandTimeout:         "4h",

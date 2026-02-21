@@ -372,6 +372,8 @@ func (b *Backuper) getObjectDiskPath() (string, error) {
 		return b.cfg.FTP.ObjectDiskPath, nil
 	} else if b.cfg.General.RemoteStorage == "sftp" {
 		return b.cfg.SFTP.ObjectDiskPath, nil
+	} else if b.cfg.General.RemoteStorage == "local" {
+		return b.cfg.Local.ObjectDiskPath, nil
 	}
 
 	return "", errors.WithStack(fmt.Errorf("cleanBackupObjectDisks: requesst object disks path but have unsupported remote_storage: %s", b.cfg.General.RemoteStorage))

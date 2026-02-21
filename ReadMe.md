@@ -100,7 +100,7 @@ The following values are not defaults; they explain what each config parameter w
 
 ```yaml
 general:
-  remote_storage: none           # REMOTE_STORAGE, choice from: `azblob`,`gcs`,`s3`, etc; if `none` then `upload` and `download` commands will fail.
+  remote_storage: none           # REMOTE_STORAGE, choice from: `azblob`,`gcs`,`s3`,`local`, etc; if `none` then `upload` and `download` commands will fail.
   max_file_size: 1073741824      # MAX_FILE_SIZE, 1G by default, useless when upload_by_part is true, use to split data parts files by archives
   backups_to_keep_local: 0       # BACKUPS_TO_KEEP_LOCAL, how many latest local backup should be kept, 0 means all created backups will be stored on local disk
                                  # -1 means backup will keep after `create` but will delete after `create_remote` command
@@ -344,6 +344,12 @@ sftp:
   compression_format: tar      # SFTP_COMPRESSION_FORMAT, allowed values tar, lz4, bzip2, gzip, sz, xz, brortli, zstd, `none` for upload data part folders as is
   compression_level: 1         # SFTP_COMPRESSION_LEVEL
   debug: false                 # SFTP_DEBUG
+local:
+  path: ""                     # LOCAL_PATH, path to local filesystem directory for backups, `system.macros` values can be applied as {macro_name}
+  object_disk_path: ""         # LOCAL_OBJECT_DISK_PATH, path for backup of part from clickhouse object disks, if object disks present in clickhouse, then shall not be zero and shall not be prefixed by `path`
+  compression_format: tar      # LOCAL_COMPRESSION_FORMAT, allowed values tar, lz4, bzip2, gzip, sz, xz, brortli, zstd, `none` for upload data part folders as is
+  compression_level: 1         # LOCAL_COMPRESSION_LEVEL
+  debug: false                 # LOCAL_DEBUG
 custom:
   upload_command: ""           # CUSTOM_UPLOAD_COMMAND
   download_command: ""         # CUSTOM_DOWNLOAD_COMMAND
