@@ -9,10 +9,9 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        golang-version:
-          - "1.25"
+    permissions:
+      contents: write
+      packages: write
 
     steps:
       - name: Checkout project
@@ -22,27 +21,15 @@ jobs:
         id: setup-go
         uses: actions/setup-go@v6
         with:
-          go-version: '^${{ matrix.golang-version }}'
+          go-version: '^1.25'
 
-      - name: Setup fpm and make
+      - name: Setup fpm and build tools
         run: |
-          sudo apt-get install -y --no-install-recommends ruby ruby-dev gcc g++ rpm musl-dev musl-tools
-          sudo apt-get install --no-install-recommends -y make
+          sudo apt-get install -y --no-install-recommends ruby ruby-dev gcc g++ rpm musl-dev musl-tools make
           sudo gem install --no-document fpm
-
-#      - name: Cache golang
-#        id: cache-golang
-#        uses: actions/cache@v4
-#        with:
-#          path: |
-#            ~/go/pkg/mod
-#            ~/.cache/go-build
-#          key: clickhouse-backup-golang-${{ matrix.golang-version }}-${{ hashFiles('go.mod', '.github/workflows/*.yaml') }}
 
       - name: Install golang dependencies
         run: go mod download -x
-#        if: |
-#          steps.cache-golang.outputs.cache-hit != 'true'
 
       - name: Extract DOCKER_TAG version
         id: docker_tag
@@ -52,15 +39,13 @@ jobs:
           export DOCKER_TAG=${DOCKER_TAG#v}
           echo "docker_tag=${DOCKER_TAG:-dev}" >> $GITHUB_OUTPUT
 
-      - name: Prepare binaries
-        id: make
+      - name: Build binaries and run tests
         env:
           GOROOT: ${{ env.GOROOT_1_25_X64 }}
         run: |
           make build build-fips config test
-          #make build-fips-darwin
 
-      - name: Building deb, rpm and tar.gz packages
+      - name: Build packages and archives
         id: make_packages
         run: |
           set -x
@@ -74,11 +59,8 @@ jobs:
           echo "tgz_darwin_arm64=${NAME}-darwin-arm64.tar.gz" >> $GITHUB_OUTPUT
 
           printf "amd64 arm64" | xargs -P 2 -d " " -I {} tar -czvf ${NAME}-linux-{}-fips.tar.gz build/linux/{}/${NAME}-fips
-          # printf "amd64 arm64" | xargs -P 2 -d " " -I {} tar -czvf ${NAME}-darwin-{}-fips.tar.gz build/darwin/{}/${NAME}-fips
           echo "tgz_linux_amd64_fips=${NAME}-linux-amd64-fips.tar.gz" >> $GITHUB_OUTPUT
           echo "tgz_linux_arm64_fips=${NAME}-linux-arm64-fips.tar.gz" >> $GITHUB_OUTPUT
-          # echo "tgz_darwin_amd64_fips=${NAME}-darwin-amd64-fips.tar.gz" >> $GITHUB_OUTPUT
-          # echo "tgz_darwin_arm64_fips=${NAME}-darwin-arm64-fips.tar.gz" >> $GITHUB_OUTPUT
 
           make packages
           cp -lv ./build/linux/*/*.deb ./
@@ -88,7 +70,6 @@ jobs:
           echo "rpm_arm64=${NAME}-${VERSION}-1.aarch64.rpm" >> $GITHUB_OUTPUT
           echo "deb_arm64=${NAME}_${VERSION}_arm64.deb" >> $GITHUB_OUTPUT
 
-
       - name: Prepare release notes
         id: release_notes
         run: |
@@ -96,14 +77,12 @@ jobs:
           echo "path=/tmp/release_notes.md" >> $GITHUB_OUTPUT
 
       - name: Create release
-        id: create_release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           tag_name: v${{ steps.docker_tag.outputs.docker_tag }}
           name: ${{ steps.docker_tag.outputs.docker_tag }}
           body_path: ${{ steps.release_notes.outputs.path }}
-          draft: true
+          draft: false
           fail_on_unmatched_files: true
           files: |
             ${{ steps.make_packages.outputs.rpm_amd64 }}
@@ -116,34 +95,34 @@ jobs:
             ${{ steps.make_packages.outputs.tgz_darwin_arm64 }}
             ${{ steps.make_packages.outputs.tgz_linux_amd64_fips }}
             ${{ steps.make_packages.outputs.tgz_linux_arm64_fips }}
-      #          ${{ steps.make_packages.outputs.tgz_darwin_amd64_fips }}
-      #          ${{ steps.make_packages.outputs.tgz_darwin_arm64_fips }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Building docker image
-        env:
-          DOCKER_REPO: ${{ secrets.DOCKER_REPO }}
-          DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
-          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
-          DOCKER_USER: ${{ secrets.DOCKER_USER }}
-          DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
-          DOCKER_TAG: ${{ steps.docker_tag.outputs.docker_tag }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          export DOCKER_REGISTRY=${DOCKER_REGISTRY:-docker.io}
-          echo ${DOCKER_TOKEN} | docker login -u ${DOCKER_USER} --password-stdin ${DOCKER_REGISTRY}
-          export VERSION=$(git describe --always --tags --abbrev=0 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/c\1/;s/-/./g')
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=${DOCKER_REGISTRY}/${DOCKER_REPO}/${DOCKER_IMAGE}:${DOCKER_TAG} --tag ${DOCKER_REGISTRY}/${DOCKER_REPO}/${DOCKER_IMAGE}:latest --build-arg VERSION=$VERSION --target=image_short --pull --push .
-          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=${DOCKER_REGISTRY}/${DOCKER_REPO}/${DOCKER_IMAGE}:${DOCKER_TAG}-fips --tag ${DOCKER_REGISTRY}/${DOCKER_REPO}/${DOCKER_IMAGE}:latest-fips --build-arg VERSION=$VERSION --target=image_fips --pull --push .
-          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=${DOCKER_REGISTRY}/${DOCKER_REPO}/${DOCKER_IMAGE}-full:${DOCKER_TAG} --tag ${DOCKER_REGISTRY}/${DOCKER_REPO}/${DOCKER_IMAGE}-full:latest --build-arg VERSION=$VERSION --target=image_full --pull --push .
-          
-          # Publish to GitHub Container Registry
-          echo ${GITHUB_TOKEN} | docker login -u $GITHUB_ACTOR --password-stdin ghcr.io
-          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=ghcr.io/${DOCKER_REPO}/${DOCKER_IMAGE}:${DOCKER_TAG} --tag ghcr.io/${DOCKER_REPO}/${DOCKER_IMAGE}:latest --build-arg VERSION=$VERSION --target=image_short --pull --push .
-          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=ghcr.io/${DOCKER_REPO}/${DOCKER_IMAGE}:${DOCKER_TAG}-fips --tag ghcr.io/${DOCKER_REPO}/${DOCKER_IMAGE}:latest-fips --build-arg VERSION=$VERSION --target=image_fips --pull --push .
-          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=ghcr.io/${DOCKER_REPO}/${DOCKER_IMAGE}-full:${DOCKER_TAG} --tag ghcr.io/${DOCKER_REPO}/${DOCKER_IMAGE}-full:latest --build-arg VERSION=$VERSION --target=image_full --pull --push .
+      - name: Build and push Docker images to GHCR
+        env:
+          DOCKER_TAG: ${{ steps.docker_tag.outputs.docker_tag }}
+        run: |
+          export VERSION=$(git describe --always --tags --abbrev=0 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/c\1/;s/-/./g')
+          export REPO=ghcr.io/${{ github.repository_owner }}/clickhouse-backup
+
+          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 \
+            --tag=${REPO}:${DOCKER_TAG} --tag=${REPO}:latest \
+            --build-arg VERSION=$VERSION --target=image_short --pull --push .
+
+          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 \
+            --tag=${REPO}:${DOCKER_TAG}-fips --tag=${REPO}:latest-fips \
+            --build-arg VERSION=$VERSION --target=image_fips --pull --push .
+
+          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 \
+            --tag=${REPO}-full:${DOCKER_TAG} --tag=${REPO}-full:latest \
+            --build-arg VERSION=$VERSION --target=image_full --pull --push .

@@ -12,11 +12,9 @@ on:
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-22.04
-    strategy:
-      matrix:
-        golang-version:
-          - "1.25"
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
     steps:
       - name: Checkout project
         uses: actions/checkout@v6
@@ -25,51 +23,23 @@ jobs:
         id: setup-go
         uses: actions/setup-go@v6
         with:
-          go-version: '^${{ matrix.golang-version }}'
+          go-version: '^1.25'
 
       - name: Setup musl
-        id: setup-musl
         run: |
           sudo apt-get install -y musl-tools musl-dev
 
-#      - name: Cache golang
-#        id: cache-golang
-#        uses: actions/cache@v4
-#        with:
-#          path: |
-#            ~/go/pkg/mod
-#            ~/.cache/go-build
-#          key: clickhouse-backup-golang-${{ matrix.golang-version }}-${{ hashFiles('go.mod', '.github/workflows/*.yaml') }}
-
       - name: Install golang dependencies
         run: go mod download -x
-#        if: |
-#          steps.cache-golang.outputs.cache-hit != 'true'
 
-      - name: Build clickhouse-backup binary
-        id: make-race
+      - name: Build and test
         env:
           GOROOT: ${{ env.GOROOT_1_25_X64 }}
         run: |
-          make build/linux/amd64/clickhouse-backup build/linux/arm64/clickhouse-backup
-          make build/linux/amd64/clickhouse-backup-fips build/linux/arm64/clickhouse-backup-fips 
-          make build-race build-race-fips config test
+          make build build-fips config test
 
-      - name: Report unittest coverage
-        uses: coverallsapp/github-action@v2
-        with:
-          file: _coverage_/coverage.out
-          parallel: true
-          format: golang
-          flag-name: unittest-${{ matrix.clickhouse }}
-
-      - name: Extract GCS credentials
-        id: secrets
-        uses: ./.github/actions/extract-gcs-creds
-        with:
-          VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD }}
-
-      - uses: actions/upload-artifact@v6
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
         with:
           name: build-artifacts
           path: |
@@ -80,300 +50,13 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - uses: actions/upload-artifact@v6
-        with:
-          name: build-test-artifacts
-          path: |
-            clickhouse-backup/clickhouse-backup-race
-            clickhouse-backup/clickhouse-backup-race-fips
-          if-no-files-found: error
-          retention-days: 1
-    outputs:
-      GCS_TESTS: ${{ steps.secrets.outputs.GCS_TESTS }}
-
-  testflows:
-    needs: build
-    name: Testflows
-    runs-on: ubuntu-22.04
-    strategy:
-      matrix:
-        golang-version:
-          - "1.25"
-        clickhouse:
-          - '22.3'
-          - '22.8'
-          - '23.3'
-          - '23.8'
-          - '24.3'
-          - '24.8'
-          - '25.3'
-          - '25.8'
-          - '26.1'
-    steps:
-      - name: Checkout project
-        uses: actions/checkout@v6
-
-      - name: Setup golang
-        id: setup-go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '^${{ matrix.golang-version }}'
-
-      - uses: actions/download-artifact@v7
-        with:
-          name: build-test-artifacts
-          path: ./clickhouse-backup/
-
-      - name: Install python venv
-        run: |
-          set -x
-          (dpkg -l | grep venv) || (apt-get update && apt-get install -y python3-venv)
-          python3 -m venv ~/venv/qa
-
-      - name: Cache python
-        uses: actions/cache@v4
-        id: cache-python
-        with:
-          path: ~/venv/qa
-          key: clickhouse-backup-python-${{ hashFiles('test/testflows/requirements.txt','.github/workflows/*.yaml') }}
-
-      - name: Install python dependencies
-        run: |
-          set -x
-          ~/venv/qa/bin/pip3 install -U -r ./test/testflows/requirements.txt
-        if: |
-          steps.cache-python.outputs.cache-hit != 'true'
-
-      - name: Running TestFlows tests
-        env:
-          CLICKHOUSE_VERSION: ${{ matrix.clickhouse }}
-          QA_AWS_ACCESS_KEY: ${{ secrets.QA_AWS_ACCESS_KEY }}
-          QA_AWS_ENDPOINT: ${{ secrets.QA_AWS_ENDPOINT }}
-          QA_AWS_SECRET_KEY: ${{ secrets.QA_AWS_SECRET_KEY }}
-          QA_AWS_REGION: ${{ secrets.QA_AWS_REGION }}
-          QA_AWS_BUCKET: ${{ secrets.QA_AWS_BUCKET }}
-          QA_GCS_CRED_JSON: ${{ secrets.QA_GCS_CRED_JSON }}
-          # don't change it to avoid not working CI/CD
-          RUN_TESTS: "*"
-        run: |
-          set -xe
-          export CLICKHOUSE_TESTS_DIR=$(pwd)/test/testflows/clickhouse_backup
-
-          docker compose -f ${CLICKHOUSE_TESTS_DIR}/docker-compose/docker-compose.yml pull
-          
-          chmod +x $(pwd)/clickhouse-backup/clickhouse-backup*
-          source ~/venv/qa/bin/activate
-          ~/venv/qa/bin/python3 ./test/testflows/clickhouse_backup/regression.py --debug --only="${RUN_TESTS:-*}" --no-colors --log ./test/testflows/raw.log 
-          tfs --debug --no-colors transform compact ./test/testflows/raw.log ./test/testflows/compact.log
-          tfs --debug --no-colors transform nice ./test/testflows/raw.log ./test/testflows/nice.log.txt
-          tfs --debug --no-colors transform short ./test/testflows/raw.log ./test/testflows/short.log.txt
-          tfs --debug --no-colors report results -a "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/" ./test/testflows/raw.log - --confidential --copyright "Altinity LTD" --logo ./test/testflows/altinity.png | ~/venv/qa/bin/tfs --debug --no-colors document convert > ./test/testflows/report.html
-          sudo chmod -Rv +rx test/testflows/clickhouse_backup/_instances
-      - name: Format testflows coverage
-        env:
-          GOROOT: ${{ env.GOROOT_1_25_X64 }}
-        run: |
-          sudo chmod -Rv a+rw test/testflows/_coverage_/
-          ls -la test/testflows/_coverage_
-          go env
-          go tool covdata textfmt -i test/testflows/_coverage_/ -o test/testflows/_coverage_/coverage.out
-      - name: Report testflows coverage
-        uses: coverallsapp/github-action@v2
-        with:
-          base-path: ./
-          file: test/testflows/_coverage_/coverage.out
-          parallel: true
-          format: golang
-          flag-name: testflows-${{ matrix.clickhouse }}
-      # todo possible failures  https://github.com/actions/upload-artifact/issues/270
-      - name: Upload testflows logs
-        uses: actions/upload-artifact@v6
-        with:
-          name: testflows-logs-and-reports-${{ matrix.clickhouse }}-${{ github.run_id }}
-          path: |
-            test/testflows/*.log
-            test/testflows/*.log.txt
-            test/testflows/clickhouse_backup/_instances/**/*.log
-            test/testflows/*.html
-          retention-days: 7
-
-  test:
-    needs: build
-    name: Test
-    runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        golang-version:
-          - "1.25"
-        clickhouse:
-          - '1.1.54394'
-          - '19.17'
-          - '20.3'
-          - '20.8'
-          - '21.3'
-          - '21.8'
-          - '22.3'
-          - '22.8'
-          - '23.3'
-          - '23.8'
-          - '24.3'
-          - '24.8'
-          - '25.3'
-          - '25.8'
-          - '26.1'
-    steps:
-      - name: Checkout project
-        uses: actions/checkout@v6
-
-      - name: Setup golang
-        id: setup-go
-        uses: actions/setup-go@v6
-        with:
-          go-version: '^${{ matrix.golang-version }}'
-
-#      - name: Cache golang
-#        id: cache-golang
-#        uses: actions/cache@v4
-#        with:
-#          path: |
-#            ~/go/pkg/mod
-#            ~/.cache/go-build
-#          key: clickhouse-backup-golang-${{ matrix.golang-version }}-${{ hashFiles('go.mod', '.github/workflows/*.yaml') }}
-
-      - uses: actions/download-artifact@v7
-        with:
-          name: build-test-artifacts
-          path: ./clickhouse-backup/
-
-      - name: Extract GCS credentials
-        id: secrets
-        uses: ./.github/actions/extract-gcs-creds
-        with:
-          VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD }}
-
-      - name: Running integration tests
-        env:
-          RUN_PARALLEL: 4
-          GOROOT: ${{ env.GOROOT_1_25_X64 }}
-          CLICKHOUSE_VERSION: ${{ matrix.clickhouse }}
-          # options for advanced debug CI/CD
-          # RUN_TESTS: "^TestSkipDisk$"
-          # LOG_LEVEL: "debug"
-          # TEST_LOG_LEVEL: "debug"
-          # GCS_DEBUG: "true"
-          # SFTP_DEBUG: "true"
-          # AZBLOB_DEBUG: "true"
-          # FTP_DEBUG: "true"
-          # S3_DEBUG: "true"
-          CGO_ENABLED: 0
-          GCS_TESTS: ${{ needs.build.outputs.GCS_TESTS }}
-          KEEPER_TLS_ENABLED: 1
-          RUN_ADVANCED_TESTS: 1
-          AZURE_TESTS: 1
-          # need for FIPS
-          QA_AWS_ACCESS_KEY: ${{ secrets.QA_AWS_ACCESS_KEY }}
-          QA_AWS_SECRET_KEY: ${{ secrets.QA_AWS_SECRET_KEY }}
-          QA_AWS_BUCKET: ${{ secrets.QA_AWS_BUCKET }}
-          QA_AWS_REGION: ${{ secrets.QA_AWS_REGION }}
-          # need for GCP over S3
-          QA_GCS_OVER_S3_ACCESS_KEY: ${{ secrets.QA_GCS_OVER_S3_ACCESS_KEY }}
-          QA_GCS_OVER_S3_SECRET_KEY: ${{ secrets.QA_GCS_OVER_S3_SECRET_KEY }}
-          QA_GCS_OVER_S3_BUCKET: ${{ secrets.QA_GCS_OVER_S3_BUCKET }}
-        run: |
-          set -xe
-          echo "CLICKHOUSE_VERSION=${CLICKHOUSE_VERSION}"
-          echo "GCS_TESTS=${GCS_TESTS}"
-          GCS_ENCRYPTION_KEY=$(openssl rand -base64 32)
-          export GCS_ENCRYPTION_KEY
-          
-          chmod +x $(pwd)/clickhouse-backup/clickhouse-backup*
-
-          if [[ "${CLICKHOUSE_VERSION}" =~ 2[2-9]+ ]]; then
-            export CLICKHOUSE_IMAGE=clickhouse/clickhouse-server
-          else
-            export CLICKHOUSE_IMAGE=yandex/clickhouse-server
-          fi
-
-          if [[ "${CLICKHOUSE_VERSION}" == 2* ]]; then
-            export COMPOSE_FILE=docker-compose_advanced.yml
-          else
-            export COMPOSE_FILE=docker-compose.yml
-          fi
-
-          export CUR_DIR="$(pwd)/test/integration"
-          export CLICKHOUSE_BACKUP_BIN="$(pwd)/clickhouse-backup/clickhouse-backup-race"
-          docker compose -f "${CUR_DIR}/${COMPOSE_FILE}" --progress=quiet pull
-          
-          pids=()
-          project_ids=()
-          for ((i = 0; i < RUN_PARALLEL; i++)); do
-            docker compose -f ${CUR_DIR}/${COMPOSE_FILE} --project-name project${i} --progress plain up -d &
-            pids+=($!)
-            project_ids+=("project${i}")
-          done
-          
-          
-          for index in "${!pids[@]}"; do
-            pid=${pids[index]}
-            project_id=${project_ids[index]}
-            if wait "$pid"; then
-                echo "$pid docker compose up successful"
-            else
-                echo "=== docker ${project_id} state ==="
-                docker compose -f ${CUR_DIR}/${COMPOSE_FILE} --project-name ${project_id} --progress plain ps -a
-                echo "=== docker ${project_id} logs ==="
-                docker compose -f ${CUR_DIR}/${COMPOSE_FILE} --project-name ${project_id} --progress plain logs
-                echo "$pid the docker compose up failed."
-                exit 1  # Exit with an error code if any command fails
-            fi
-          done
-          set +e
-          go test -parallel ${RUN_PARALLEL} -timeout 90m -failfast -tags=integration -run "${RUN_TESTS:-.+}" -v test/integration/integration_test.go
-          TEST_FAILED=$?
-          set -e
-          if [[ "0" != "${TEST_FAILED}" ]]; then
-            for project_id in "${project_ids[@]}"; do
-                echo "=== docker ${project_id} state ==="
-                docker compose -f ${CUR_DIR}/${COMPOSE_FILE} --project-name ${project_id} --progress plain ps -a
-                echo "=== docker ${project_id} logs ==="
-                docker compose -f ${CUR_DIR}/${COMPOSE_FILE} --project-name ${project_id} --progress plain logs
-            done
-            exit 1
-          fi      
-
-      - name: Format integration coverage
-        env:
-          GOROOT: ${{ env.GOROOT_1_25_X64 }}
-        run: |
-          sudo chmod -Rv a+rw test/integration/_coverage_/
-          ls -la test/integration/_coverage_ 
-          go tool covdata textfmt -i test/integration/_coverage_/ -o test/integration/_coverage_/coverage.out
-      - name: Report integration coverage
-        uses: coverallsapp/github-action@v2
-        with:
-          base-path: ./
-          file: test/integration/_coverage_/coverage.out
-          parallel: true
-          format: golang
-          flag-name: integration-${{ matrix.clickhouse }}
-  coverage:
-    needs:
-      - test
-      - testflows
-    name: coverage
-    runs-on: ubuntu-24.04
-    steps:
-        - name: Coveralls Finished
-          uses: coverallsapp/github-action@v2
-          with:
-            base-path: ./
-            parallel-finished: true
   docker:
-    needs:
-      - test
-      - testflows
-    name: Docker
+    name: Docker (dev)
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
+    permissions:
+      packages: write
     steps:
       - name: Checkout project
         uses: actions/checkout@v6
@@ -383,41 +66,31 @@ jobs:
           name: build-artifacts
           path: ./build/linux/
 
-      - name: Extract DOCKER_TAG version
-        id: docker_tag
-        run: |
-          DOCKER_TAG=${GITHUB_REF##*/}
-          export DOCKER_TAG=${DOCKER_TAG##*\\}
-          echo "docker_tag=${DOCKER_TAG:-dev}" >> $GITHUB_OUTPUT
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Building docker image
-        env:
-          DOCKER_REPO: ${{ secrets.DOCKER_REPO }}
-          DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
-          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
-          DOCKER_USER: ${{ secrets.DOCKER_USER }}
-          DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
-          DOCKER_TAG: ${{ steps.docker_tag.outputs.docker_tag }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push dev Docker images
         run: |
-          if [[ "${DOCKER_TOKEN}" != "" ]]; then
-            export DOCKER_REGISTRY=${DOCKER_REGISTRY:-docker.io}
-            echo ${DOCKER_TOKEN} | docker login -u ${DOCKER_USER} --password-stdin ${DOCKER_REGISTRY}
-            export VERSION=$(git describe --always --tags --abbrev=0 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/c\1/;s/-/./g')
+          export VERSION=$(git describe --always --tags --abbrev=0 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/c\1/;s/-/./g')
+          export REPO=ghcr.io/${{ github.repository_owner }}/clickhouse-backup
 
-            docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=${DOCKER_REGISTRY}/${DOCKER_REPO}/${DOCKER_IMAGE}-full:${DOCKER_TAG} --build-arg VERSION=$VERSION --target=image_full --pull --push .
-            docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=${DOCKER_REGISTRY}/${DOCKER_REPO}/${DOCKER_IMAGE}:${DOCKER_TAG} --build-arg VERSION=$VERSION --target=image_short --pull --push .
-            docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=${DOCKER_REGISTRY}/${DOCKER_REPO}/${DOCKER_IMAGE}:${DOCKER_TAG}-fips --build-arg VERSION=$VERSION --target=image_fips --pull --push .
+          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 \
+            --tag=${REPO}:dev \
+            --build-arg VERSION=$VERSION --target=image_short --pull --push .
 
-            # Publish to GitHub Container Registry
-            echo ${GITHUB_TOKEN} | docker login -u $GITHUB_ACTOR --password-stdin ghcr.io
-            docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=ghcr.io/${DOCKER_REPO}/${DOCKER_IMAGE}:${DOCKER_TAG} --build-arg VERSION=$VERSION --target=image_short --pull --push .
-            docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=ghcr.io/${DOCKER_REPO}/${DOCKER_IMAGE}-full:${DOCKER_TAG} --build-arg VERSION=$VERSION --target=image_full --pull --push .
-            docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 --tag=ghcr.io/${DOCKER_REPO}/${DOCKER_IMAGE}:${DOCKER_TAG}-fips --build-arg VERSION=$VERSION --target=image_fips --pull --push .
-          fi
-          
+          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 \
+            --tag=${REPO}-full:dev \
+            --build-arg VERSION=$VERSION --target=image_full --pull --push .
+
+          docker buildx build --progress=plain --platform=linux/amd64,linux/arm64 \
+            --tag=${REPO}:dev-fips \
+            --build-arg VERSION=$VERSION --target=image_fips --pull --push .
