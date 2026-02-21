@@ -30,7 +30,7 @@ require (
 	github.com/jlaffaye/ftp v0.2.0
 	github.com/jolestar/go-commons-pool/v2 v2.1.2
 	github.com/kelseyhightower/envconfig v1.4.0
-	github.com/klauspost/compress v1.18.3
+	github.com/klauspost/compress v1.18.4
 	github.com/mattn/go-shellwords v1.0.12
 	github.com/mholt/archiver/v4 v4.0.0-alpha.9
 	github.com/otiai10/copy v1.14.1
